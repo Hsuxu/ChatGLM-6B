@@ -25,10 +25,17 @@ import json
 
 import numpy as np
 from datasets import load_dataset
-import jieba 
+import jieba
 from rouge_chinese import Rouge
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import torch
+from torch import nn
+
+from peft import (LoraConfig,
+                  AdaLoraConfig,
+                  get_peft_model,
+                  TaskType,
+                  prepare_model_for_int8_training)
 
 import transformers
 from transformers import (
@@ -45,6 +52,12 @@ from trainer_seq2seq import Seq2SeqTrainer
 from arguments import ModelArguments, DataTrainingArguments
 
 logger = logging.getLogger(__name__)
+
+
+class CastOutputToFloat(nn.Sequential):
+    def forward(self, x):
+        return super().forward(x).to(torch.float32)
+
 
 def main():
 
@@ -121,7 +134,11 @@ def main():
                 new_prefix_state_dict[k[len("transformer.prefix_encoder."):]] = v
         model.transformer.prefix_encoder.load_state_dict(new_prefix_state_dict)
     else:
-        model = AutoModel.from_pretrained(model_args.model_name_or_path, config=config, trust_remote_code=True)
+        load_in_8bit = True if model_args.use_lora else False
+        model = AutoModel.from_pretrained(model_args.model_name_or_path,
+                                          config=config,
+                                          trust_remote_code=True,
+                                          )
 
     if model_args.quantization_bit is not None:
         print(f"Quantized to {model_args.quantization_bit} bit")
@@ -131,8 +148,19 @@ def main():
         model = model.half()
         model.transformer.prefix_encoder.float()
     else:
-        # Finetune
-        model = model.float()
+        # Finetune pure
+        if model_args.use_lora:
+            model.gradient_checkpointing_enable()
+            model.enable_input_require_grads()
+            model.lm_head = CastOutputToFloat(model.lm_head)
+            lora_cfg = LoraConfig(task_type=TaskType.CAUSAL_LM,
+                                  r=model_args.lora_r,
+                                  lora_alpha=model_args.lora_alpha,
+                                  lora_dropout=model_args.lora_dropout)
+            print(lora_cfg.to_dict())
+            model = get_peft_model(model, lora_cfg)
+            model.print_trainable_parameters()
+        model = model.half()
 
     prefix = data_args.source_prefix if data_args.source_prefix is not None else ""
 
@@ -152,7 +180,7 @@ def main():
     prompt_column = data_args.prompt_column
     response_column = data_args.response_column
     history_column = data_args.history_column
-    
+
     # Temporarily set max_target_length for training.
     max_target_length = data_args.max_target_length
 
@@ -219,7 +247,7 @@ def main():
                 context_length = input_ids.index(tokenizer.bos_token_id)
                 mask_position = context_length - 1
                 labels = [-100] * context_length + input_ids[mask_position+1:]
-                
+
                 pad_len = max_seq_length - len(input_ids)
                 input_ids = input_ids + [tokenizer.pad_token_id] * pad_len
                 labels = labels + [tokenizer.pad_token_id] * pad_len
@@ -230,9 +258,9 @@ def main():
                 model_inputs["labels"].append(labels)
 
         return model_inputs
-    
+
     def print_dataset_example(example):
-        print("input_ids",example["input_ids"])
+        print("input_ids", example["input_ids"])
         print("inputs", tokenizer.decode(example["input_ids"]))
         print("label_ids", example["labels"])
         print("labels", tokenizer.decode(example["labels"]))
@@ -324,9 +352,9 @@ def main():
             hypothesis = list(jieba.cut(pred))
             reference = list(jieba.cut(label))
             rouge = Rouge()
-            scores = rouge.get_scores(' '.join(hypothesis) , ' '.join(reference))
+            scores = rouge.get_scores(' '.join(hypothesis), ' '.join(reference))
             result = scores[0]
-            
+
             for k, v in result.items():
                 score_dict[k].append(round(v["f"] * 100, 4))
             bleu_score = sentence_bleu([list(label)], list(pred), smoothing_function=SmoothingFunction().method3)
@@ -354,7 +382,7 @@ def main():
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics if training_args.predict_with_generate else None,
-        save_prefixencoder=model_args.pre_seq_len is not None
+        # save_prefixencoder=model_args.pre_seq_len is not None
     )
 
     # Training

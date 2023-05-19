@@ -59,6 +59,22 @@ class ModelArguments:
     prefix_projection: bool = field(
         default=False
     )
+    use_lora: bool = field(
+        default=False,
+        metadata={"help": "Whether to lora."},
+    )
+    lora_r: int = field(
+        default=8,
+        metadata={"help": "the rank of the lora parameters. The smaller lora_r is , the fewer parameters lora has."},
+    )
+    lora_alpha: int = field(
+        default=32,
+        metadata={"help": "Merging ratio between the fine-tuned model and the original. \This is controlled by a parameter called alpha in the paper."},
+    )
+    lora_dropout: float = field(
+        default=0.1,
+        metadata={"help": "The dropout rate in lora.linear."},
+    )
 
 
 @dataclass

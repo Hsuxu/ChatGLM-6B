@@ -4,8 +4,9 @@ import signal
 from transformers import AutoTokenizer, AutoModel
 import readline
 
-tokenizer = AutoTokenizer.from_pretrained("THUDM/chatglm-6b", trust_remote_code=True)
-model = AutoModel.from_pretrained("THUDM/chatglm-6b", trust_remote_code=True).half().cuda()
+model_path = '/mnt/users/LLMa/ChatGLM-6B/output/lung_conclusion-chatglm-6b-pt-128-2e-2_0413/checkpoint-15000'
+tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+model = AutoModel.from_pretrained(model_path, trust_remote_code=True).half().quantize(8).cuda()
 model = model.eval()
 
 os_name = platform.system()
